@@ -1,0 +1,39 @@
+PhiBitwardenHelper — GNU GPL version 3 source offer
+===================================================
+
+The PhiBitwardenHelper executable bundled in this application (at
+Contents/Helpers/PhiBitwardenHelper) is a separate program: Copyright (C)
+2026 Phinomenon Inc., licensed under the GNU General Public License,
+version 3. The complete license text ships alongside this file as
+PhiBitwardenHelper-LICENSE.txt.
+
+It links the Bitwarden SDK (https://github.com/bitwarden/sdk-internal),
+used under the SDK's GPL-3.0 license option; none of the SDK's
+bitwarden_license/ components are included. Phi Browser drives this helper
+only as a separate program over a socket; Phi Browser itself is a separate
+work distributed under its own license.
+
+Corresponding Source (GPLv3 section 6)
+--------------------------------------
+The complete Corresponding Source for this binary consists of:
+
+1. The PhiBitwardenHelper source tree, including the build instructions
+   (README.md), the exact dependency lockfile (Cargo.lock), and the Phi
+   patch series for the Bitwarden SDK (sdk-patches/):
+
+       https://github.com/phibrowser/phi-bitwarden-helper
+
+   This binary was built from commit @HELPER_COMMIT@ (v@HELPER_VERSION@).
+
+2. The Bitwarden SDK at upstream tag rust-v3.0.0 (commit 7fd530e4) of
+
+       https://github.com/bitwarden/sdk-internal
+
+   with the patch series from sdk-patches/ (item 1) applied on top, checked
+   out at ../sdk-internal relative to the helper source tree, as described
+   in the helper's README.md.
+
+No charge is made for this source code. If you are unable to obtain it from
+the locations above, contact Phinomenon Inc. via https://phibrowser.com and
+a copy will be provided for no more than the cost of performing the
+transfer.

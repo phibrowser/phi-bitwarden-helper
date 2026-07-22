@@ -1,0 +1,88 @@
+[package]
+name = "phi-bitwarden-helper"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Out-of-process Bitwarden vault helper for Phi Browser (native Rust)."
+
+# The binary is named to match the path Phi's Swift client spawns:
+# <App>.app/Contents/Helpers/PhiBitwardenHelper
+[[bin]]
+name = "PhiBitwardenHelper"
+path = "src/main.rs"
+
+# On-the-wire check that the client-version header is actually sent (the
+# identity server refuses logins without it). Debug builds only — see the file.
+[[example]]
+name = "header_probe"
+required-features = ["bitwarden-sdk"]
+
+# Diagnostic login through a local logging proxy (response field names only).
+[[example]]
+name = "login_probe"
+required-features = ["bitwarden-sdk"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The Bitwarden SDK (GPL-3.0) is linked ONLY when the `bitwarden-sdk` feature is
+# enabled. Sourced from the local clone at ~/Phi/sdk-internal, branch
+# `phi/rust-v3.0.0-patched`: upstream tag rust-v3.0.0 (commit 7fd530e4, the
+# source of the sdk-swift v3.0.0-* releases) plus Phi patches — see that
+# branch's log. The default build uses the stub engine and pulls none of this,
+# so it compiles fast and stays dependency-light.
+# `internal` unlocks the networked password login + vault sync APIs that the
+# mobile UniFFI layer doesn't expose (mobile apps do their own networking).
+[dependencies.bitwarden-core]
+path = "../sdk-internal/crates/bitwarden-core"
+features = ["internal"]
+optional = true
+
+[dependencies.bitwarden-vault]
+path = "../sdk-internal/crates/bitwarden-vault"
+optional = true
+
+[dependencies.bitwarden-pm]
+path = "../sdk-internal/crates/bitwarden-pm"
+optional = true
+
+[dependencies.bitwarden-sync]
+path = "../sdk-internal/crates/bitwarden-sync"
+optional = true
+
+[dependencies.tokio]
+version = "1"
+features = ["rt-multi-thread"]
+optional = true
+
+# Evaluates vault URIs stored with the `RegularExpression` match rule. Pinned
+# to the exact version already in the inherited SDK lockfile so enabling it
+# resolves nothing new.
+[dependencies.regex]
+version = "=1.12.3"
+optional = true
+
+# Consuming sdk-internal's crates via git does NOT inherit its Cargo.lock, so
+# cargo otherwise resolves newer, API-incompatible RCs of the RustCrypto
+# pre-release crates. Pin them to exactly what sdk-internal @ rust-v3.0.0 locks.
+# Optional + feature-scoped, so the default (stub) build never pulls them.
+[dependencies.ml-dsa]
+version = "=0.1.0-rc.8"
+optional = true
+
+[features]
+default = []
+# Enable to link the real Bitwarden SDK and use the SDK-backed vault engine.
+bitwarden-sdk = [
+    "dep:bitwarden-core",
+    "dep:bitwarden-vault",
+    "dep:bitwarden-pm",
+    "dep:bitwarden-sync",
+    "dep:tokio",
+    "dep:regex",
+    "dep:ml-dsa",
+]
+
+[profile.release]
+strip = true

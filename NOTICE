@@ -1,0 +1,27 @@
+PhiBitwardenHelper
+Copyright (C) 2026 Phinomenon Inc.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 3.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+The complete license text is in the LICENSE file of this repository.
+
+---
+
+This program links the Bitwarden SDK (https://github.com/bitwarden/sdk-internal).
+The SDK is dual-licensed (GPL-3.0 or the Bitwarden Software Development Kit
+License); this program uses it under the GPL-3.0 option and links none of the
+SDK's `bitwarden_license/` (commercial-license-only) components.
+
+That is the reason this component is a separate GPL-licensed process: it keeps
+the Bitwarden SDK out of the Phi Browser application, which remains under the
+Apache License 2.0 and drives this helper only as a separate program over a
+Unix-domain socket.
+
+Shipped builds carry distribution obligations — see "Distributing binaries
+(GPLv3 §6)" in README.md.
