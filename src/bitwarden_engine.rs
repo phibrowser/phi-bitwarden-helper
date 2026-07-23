@@ -473,13 +473,35 @@ fn host_of(uri: &str) -> Option<String> {
     }
 }
 
+/// The wire item type a cipher is served as, or None for the types the
+/// credential surface does not expose (bank account, driver's license,
+/// passport — this SDK fork's extras, not part of Bitwarden's standard item
+/// set). A login cipher with no login payload is malformed and unserved.
+fn item_kind(view: &CipherView) -> Option<&'static str> {
+    match view.r#type {
+        CipherType::Login if view.login.is_some() => Some("login"),
+        CipherType::SecureNote => Some("note"),
+        CipherType::Card => Some("card"),
+        CipherType::Identity => Some("identity"),
+        CipherType::SshKey => Some("sshKey"),
+        _ => None,
+    }
+}
+
+/// Appends a present, non-empty type-specific field under its wire key.
+fn push_field(typed: &mut Vec<(String, String)>, key: &str, value: Option<&str>) {
+    if let Some(v) = value.filter(|v| !v.is_empty()) {
+        typed.push((key.to_string(), v.to_string()));
+    }
+}
+
 /// Projects a decrypted cipher into the wire `VaultItem`.
 ///
-/// An organization can withhold password viewing on a shared item
-/// (`view_password == false`); handing the secret to an agent is a view, so
-/// such an item serves its account identity but keeps the password and TOTP
-/// seed back (mirroring the hide-passwords collection permission, which covers
-/// both).
+/// An organization can withhold secret viewing on a shared item
+/// (`view_password == false`); handing a secret to an agent is a view, so such
+/// an item serves its identity but keeps the hidden fields back — the login
+/// password and TOTP seed, a card's number and code, an SSH private key
+/// (mirroring the hide-passwords collection permission, which covers them all).
 fn to_vault_item(view: &CipherView, query: &Query) -> VaultItem {
     let login = view.login.as_ref();
     let uri = login_uris(view).into_iter().next();
@@ -487,14 +509,67 @@ fn to_vault_item(view: &CipherView, query: &Query) -> VaultItem {
         Query::Domain { domain, .. } => Some(domain.clone()),
         _ => uri.as_deref().and_then(host_of),
     };
+    let mut typed: Vec<(String, String)> = Vec::new();
+    match view.r#type {
+        CipherType::Card => {
+            if let Some(card) = view.card.as_ref() {
+                push_field(&mut typed, "cardholderName", card.cardholder_name.as_deref());
+                push_field(&mut typed, "brand", card.brand.as_deref());
+                if view.view_password {
+                    push_field(&mut typed, "number", card.number.as_deref());
+                    push_field(&mut typed, "code", card.code.as_deref());
+                }
+                push_field(&mut typed, "expMonth", card.exp_month.as_deref());
+                push_field(&mut typed, "expYear", card.exp_year.as_deref());
+            }
+        }
+        CipherType::Identity => {
+            if let Some(identity) = view.identity.as_ref() {
+                push_field(&mut typed, "title", identity.title.as_deref());
+                push_field(&mut typed, "firstName", identity.first_name.as_deref());
+                push_field(&mut typed, "middleName", identity.middle_name.as_deref());
+                push_field(&mut typed, "lastName", identity.last_name.as_deref());
+                push_field(&mut typed, "address1", identity.address1.as_deref());
+                push_field(&mut typed, "address2", identity.address2.as_deref());
+                push_field(&mut typed, "address3", identity.address3.as_deref());
+                push_field(&mut typed, "city", identity.city.as_deref());
+                push_field(&mut typed, "state", identity.state.as_deref());
+                push_field(&mut typed, "postalCode", identity.postal_code.as_deref());
+                push_field(&mut typed, "country", identity.country.as_deref());
+                push_field(&mut typed, "company", identity.company.as_deref());
+                push_field(&mut typed, "email", identity.email.as_deref());
+                push_field(&mut typed, "phone", identity.phone.as_deref());
+                push_field(&mut typed, "ssn", identity.ssn.as_deref());
+                push_field(&mut typed, "passportNumber", identity.passport_number.as_deref());
+                push_field(&mut typed, "licenseNumber", identity.license_number.as_deref());
+            }
+        }
+        CipherType::SshKey => {
+            if let Some(key) = view.ssh_key.as_ref() {
+                if view.view_password {
+                    push_field(&mut typed, "privateKey", Some(key.private_key.as_str()));
+                }
+                push_field(&mut typed, "publicKey", Some(key.public_key.as_str()));
+                push_field(&mut typed, "fingerprint", Some(key.fingerprint.as_str()));
+            }
+        }
+        _ => {}
+    }
     VaultItem {
         id: view.id.as_ref().map(|i| i.to_string()).unwrap_or_default(),
-        username: login.and_then(|l| l.username.clone()),
+        kind: item_kind(view).unwrap_or("login").to_string(),
+        name: view.name.clone(),
+        // An identity carries a username of its own; it shares the login's slot
+        // since an item is only ever one type.
+        username: login
+            .and_then(|l| l.username.clone())
+            .or_else(|| view.identity.as_ref().and_then(|i| i.username.clone())),
         password: login.and_then(|l| l.password.clone()).filter(|_| view.view_password),
         totp: login.and_then(|l| l.totp.clone()).filter(|_| view.view_password),
         uri,
         notes: view.notes.clone(),
         domain,
+        typed,
     }
 }
 
@@ -509,6 +584,8 @@ fn to_candidate(view: &CipherView, query: &Query) -> LookupCandidate {
     };
     LookupCandidate {
         id: view.id.as_ref().map(|i| i.to_string()).unwrap_or_default(),
+        kind: item_kind(view).unwrap_or("login").to_string(),
+        name: view.name.clone(),
         username: login.and_then(|l| l.username.clone()),
         uri,
         domain,
@@ -848,14 +925,15 @@ impl Engine for SdkEngine {
 
     fn lookup(&self, query: &Query) -> Result<LookupOutcome, EngineError> {
         let ciphers = self.fresh_ciphers()?;
-        // The credential surface serves active login items only: whatever a
-        // query matches by text or id, it must never pull a secure note, card,
-        // or identity — or a trashed/archived login — through the credential
-        // pipe.
+        // The credential surface serves the standard vault item set — logins,
+        // secure notes, cards, identities, SSH keys — but never a trashed or
+        // archived item. A domain query still reaches only logins: it matches
+        // through login URIs (`cipher_matches`), which the other types do not
+        // have, so an autofill-shaped query can never pull a note or key.
         let matched: Vec<&CipherView> = ciphers
             .iter()
             .filter(|c| c.deleted_date.is_none() && c.archived_date.is_none())
-            .filter(|c| c.r#type == CipherType::Login && c.login.is_some())
+            .filter(|c| item_kind(c).is_some())
             .filter(|c| cipher_matches(c, query))
             .collect();
         // Master-password re-prompt cannot be satisfied over this protocol
@@ -974,5 +1052,119 @@ mod tests {
             uri_checksum: None,
         };
         assert!(!uri_matches_domain(&no_uri, "example.com"));
+    }
+
+    /// Minimal decrypted cipher for projection tests, built through serde so
+    /// the test does not have to spell out every SDK field.
+    fn test_cipher(patch: serde_json::Value) -> CipherView {
+        let mut base = serde_json::json!({
+            "collectionIds": [],
+            "name": "Item",
+            "type": 1,
+            "favorite": false,
+            "reprompt": 0,
+            "organizationUseTotp": false,
+            "edit": true,
+            "viewPassword": true,
+            "creationDate": "2026-01-01T00:00:00Z",
+            "revisionDate": "2026-01-01T00:00:00Z",
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        serde_json::from_value(base).expect("test cipher must deserialize")
+    }
+
+    #[test]
+    fn every_standard_item_type_is_served() {
+        assert_eq!(item_kind(&test_cipher(serde_json::json!({"type": 1, "login": {}}))), Some("login"));
+        assert_eq!(item_kind(&test_cipher(serde_json::json!({"type": 2, "secureNote": {"type": 0}}))), Some("note"));
+        assert_eq!(item_kind(&test_cipher(serde_json::json!({"type": 3, "card": {}}))), Some("card"));
+        assert_eq!(item_kind(&test_cipher(serde_json::json!({"type": 4, "identity": {}}))), Some("identity"));
+        assert_eq!(
+            item_kind(&test_cipher(serde_json::json!({"type": 5,
+                "sshKey": {"privateKey": "PK", "publicKey": "pub", "fingerprint": "fp"}}))),
+            Some("sshKey")
+        );
+        // A login with no payload, and this fork's extra types, are not served.
+        assert_eq!(item_kind(&test_cipher(serde_json::json!({"type": 1}))), None);
+        assert_eq!(item_kind(&test_cipher(serde_json::json!({"type": 6}))), None);
+    }
+
+    #[test]
+    fn search_matches_a_note_by_name_but_domain_does_not() {
+        let note = test_cipher(serde_json::json!({
+            "type": 2, "secureNote": {"type": 0}, "name": "testnote", "notes": "the body"
+        }));
+        assert!(cipher_matches(&note, &Query::Search("testnote".into())));
+        // A domain query matches through login URIs, which a note has none of.
+        assert!(!cipher_matches(&note, &Query::Domain {
+            domain: "testnote".into(),
+            username: None
+        }));
+        let item = to_vault_item(&note, &Query::Search("testnote".into()));
+        assert_eq!(item.kind, "note");
+        assert_eq!(item.name, "testnote");
+        assert_eq!(item.notes.as_deref(), Some("the body"));
+    }
+
+    #[test]
+    fn card_serves_wire_named_fields_with_hidden_gating() {
+        let base = serde_json::json!({
+            "type": 3, "name": "Visa",
+            "card": {"cardholderName": "A. Person", "brand": "Visa",
+                     "number": "4111111111111111", "expMonth": "4",
+                     "expYear": "2030", "code": "123"}
+        });
+        let field = |item: &VaultItem, k: &str| {
+            item.typed.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone())
+        };
+        let item = to_vault_item(&test_cipher(base.clone()), &Query::Search("visa".into()));
+        assert_eq!(item.kind, "card");
+        assert_eq!(field(&item, "number").as_deref(), Some("4111111111111111"));
+        assert_eq!(field(&item, "code").as_deref(), Some("123"));
+        assert_eq!(field(&item, "expMonth").as_deref(), Some("4"));
+
+        // The hide-passwords permission withholds the hidden fields (number,
+        // code), not the card's identity.
+        let mut hidden = base;
+        hidden.as_object_mut().unwrap().insert("viewPassword".into(), serde_json::json!(false));
+        let item = to_vault_item(&test_cipher(hidden), &Query::Search("visa".into()));
+        assert!(field(&item, "number").is_none());
+        assert!(field(&item, "code").is_none());
+        assert_eq!(field(&item, "brand").as_deref(), Some("Visa"));
+    }
+
+    #[test]
+    fn ssh_key_serves_private_key_only_when_viewable() {
+        let base = serde_json::json!({
+            "type": 5, "name": "deploy key",
+            "sshKey": {"privateKey": "PRIVATE", "publicKey": "ssh-ed25519 AAAA",
+                       "fingerprint": "SHA256:abc"}
+        });
+        let item = to_vault_item(&test_cipher(base.clone()), &Query::Search("deploy".into()));
+        assert_eq!(item.kind, "sshKey");
+        assert!(item.typed.iter().any(|(k, v)| k == "privateKey" && v == "PRIVATE"));
+
+        let mut hidden = base;
+        hidden.as_object_mut().unwrap().insert("viewPassword".into(), serde_json::json!(false));
+        let item = to_vault_item(&test_cipher(hidden), &Query::Search("deploy".into()));
+        assert!(!item.typed.iter().any(|(k, _)| k == "privateKey"));
+        assert!(item.typed.iter().any(|(k, _)| k == "publicKey"));
+    }
+
+    #[test]
+    fn identity_username_shares_the_login_slot() {
+        let identity = test_cipher(serde_json::json!({
+            "type": 4, "name": "Me",
+            "identity": {"firstName": "Ada", "lastName": "L",
+                         "username": "ada", "ssn": "123-45-6789"}
+        }));
+        let item = to_vault_item(&identity, &Query::Search("me".into()));
+        assert_eq!(item.kind, "identity");
+        assert_eq!(item.username.as_deref(), Some("ada"));
+        assert!(item.typed.iter().any(|(k, v)| k == "ssn" && v == "123-45-6789"));
+        // The username rides the fixed slot, never duplicated in `typed`.
+        assert!(!item.typed.iter().any(|(k, _)| k == "username"));
     }
 }

@@ -281,11 +281,22 @@ fn parse_query(params: &Value) -> Result<Query, EngineError> {
 fn encode_item(item: &VaultItem) -> Value {
     let mut m = Map::new();
     m.insert("credentialId".into(), Value::String(item.id.clone()));
+    if !item.kind.is_empty() {
+        m.insert("type".into(), Value::String(item.kind.clone()));
+    }
+    if !item.name.is_empty() {
+        m.insert("name".into(), Value::String(item.name.clone()));
+    }
     insert_opt(&mut m, "username", &item.username);
     insert_opt(&mut m, "password", &item.password);
     insert_opt(&mut m, "uri", &item.uri);
     insert_opt(&mut m, "notes", &item.notes);
     insert_opt(&mut m, "domain", &item.domain);
+    // Type-specific fields of cards, identities, and SSH keys — already
+    // wire-named by the engine, never overlapping the fixed keys above.
+    for (key, value) in &item.typed {
+        m.insert(key.clone(), Value::String(value.clone()));
+    }
     Value::Object(m)
 }
 
@@ -296,9 +307,17 @@ fn insert_opt(map: &mut Map<String, Value>, key: &str, value: &Option<String>) {
 }
 
 /// One ambiguous-lookup candidate: identity fields only, never a secret.
+/// `type`/`name` let the caller tell apart items that have no username
+/// (notes, cards, keys).
 fn encode_candidate(candidate: &LookupCandidate) -> Value {
     let mut m = Map::new();
     m.insert("credentialId".into(), Value::String(candidate.id.clone()));
+    if !candidate.kind.is_empty() {
+        m.insert("type".into(), Value::String(candidate.kind.clone()));
+    }
+    if !candidate.name.is_empty() {
+        m.insert("name".into(), Value::String(candidate.name.clone()));
+    }
     insert_opt(&mut m, "username", &candidate.username);
     insert_opt(&mut m, "uri", &candidate.uri);
     insert_opt(&mut m, "domain", &candidate.domain);
@@ -400,13 +419,17 @@ mod tests {
             Ok(LookupOutcome::Ambiguous(vec![
                 LookupCandidate {
                     id: "id-1".into(),
+                    kind: "login".into(),
+                    name: "Example".into(),
                     username: Some("alice@example.com".into()),
                     uri: Some("https://example.com".into()),
                     domain: Some("example.com".into()),
                 },
                 LookupCandidate {
                     id: "id-2".into(),
-                    username: Some("bob@example.com".into()),
+                    kind: "note".into(),
+                    name: "example note".into(),
+                    username: None,
                     uri: None,
                     domain: Some("example.com".into()),
                 },
@@ -438,6 +461,32 @@ mod tests {
         }
         assert_eq!(candidates[0]["username"], json!("alice@example.com"));
         assert_eq!(candidates[1]["credentialId"], json!("id-2"));
+        // Non-login candidates are identified by type + name instead.
+        assert_eq!(candidates[1]["type"], json!("note"));
+        assert_eq!(candidates[1]["name"], json!("example note"));
+    }
+
+    /// A non-login item rides the same envelope: its wire type and name are
+    /// present and its type-specific fields land flat next to the fixed keys.
+    #[test]
+    fn typed_item_encodes_type_and_flat_fields() {
+        let encoded = encode_item(&VaultItem {
+            id: "id-3".into(),
+            kind: "card".into(),
+            name: "Visa".into(),
+            typed: vec![
+                ("number".into(), "4111111111111111".into()),
+                ("code".into(), "123".into()),
+                ("brand".into(), "Visa".into()),
+            ],
+            ..Default::default()
+        });
+        assert_eq!(encoded["credentialId"], json!("id-3"));
+        assert_eq!(encoded["type"], json!("card"));
+        assert_eq!(encoded["name"], json!("Visa"));
+        assert_eq!(encoded["number"], json!("4111111111111111"));
+        assert_eq!(encoded["code"], json!("123"));
+        assert!(encoded.get("username").is_none());
     }
 
     /// A unique hit is unchanged by the ambiguity rework.

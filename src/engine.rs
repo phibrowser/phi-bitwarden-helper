@@ -43,15 +43,22 @@ pub enum Query {
 }
 
 /// A decrypted vault item reduced to the fields the credential surface exposes.
+/// `kind` is the wire item type (`login` / `note` / `card` / `identity` /
+/// `sshKey`; empty reads as login for wire compatibility). `typed` carries the
+/// type-specific fields of cards, identities, and SSH keys as already
+/// wire-named (key, value) pairs — the login fields keep their dedicated slots.
 #[derive(Clone, Debug, Default)]
 pub struct VaultItem {
     pub id: String,
+    pub kind: String,
+    pub name: String,
     pub username: Option<String>,
     pub password: Option<String>,
     pub totp: Option<String>,
     pub uri: Option<String>,
     pub notes: Option<String>,
     pub domain: Option<String>,
+    pub typed: Vec<(String, String)>,
 }
 
 /// A successful lookup: the single item the query resolved to. `matches` is
@@ -66,9 +73,12 @@ pub struct LookupHit {
 /// The non-secret identity of one matching item, returned when a query is
 /// ambiguous so the caller can narrow it (by username or id). Structurally
 /// incapable of carrying a secret: no password/totp/notes field exists.
+/// `kind`/`name` identify non-login items, which have no username to go by.
 #[derive(Clone, Debug)]
 pub struct LookupCandidate {
     pub id: String,
+    pub kind: String,
+    pub name: String,
     pub username: Option<String>,
     pub uri: Option<String>,
     pub domain: Option<String>,
