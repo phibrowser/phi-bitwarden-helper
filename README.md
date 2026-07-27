@@ -103,7 +103,17 @@ Release checklist — each item blocks distribution:
 2. **Re-vendor from a clean checkout** so the shipped offer carries a real
    commit hash — a `-dirty` stamp in `PhiBitwardenHelper-SOURCE-OFFER.txt`
    means the shipped binary is not reproducible from published source.
-3. **Legal sign-off** on (a) the separate-process boundary: the FSF FAQ treats
+3. **Export every SDK patch.** `sdk-patches/` must reconstruct the exact tree
+   the binary links: a Phi commit that lands on `phi/rust-v3.0.0-patched`
+   without being exported ships a binary nobody can rebuild from the published
+   source. `install-into-phi.sh` refuses to vendor when the two disagree;
+   verify by hand with
+
+   ```sh
+   git -C ../sdk-internal format-patch 7fd530e4..phi/rust-v3.0.0-patched -o /tmp/p
+   diff -r /tmp/p sdk-patches
+   ```
+4. **Legal sign-off** on (a) the separate-process boundary: the FSF FAQ treats
    sockets/pipes between separate programs as the customary separation, but not
    as solely determinative — the semantics of the communication matter; and
    (b) the offer text itself. The "aggregation" position in the design docs is

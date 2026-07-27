@@ -1,0 +1,72 @@
+From cc2e3b0f389196ef3acf7658e682716053eb6974 Mon Sep 17 00:00:00 2001
+From: jx <jixiang@fydeos.io>
+Date: Thu, 23 Jul 2026 11:29:09 +0800
+Subject: [PATCH 2/2] fix: surface the 2FA remember token dropped by
+ PasswordLoginResponse::process_response
+
+---
+ .../src/auth/api/response/identity_success_response.rs |  6 +++++-
+ crates/bitwarden-core/src/auth/login/password.rs       | 10 ++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/crates/bitwarden-core/src/auth/api/response/identity_success_response.rs b/crates/bitwarden-core/src/auth/api/response/identity_success_response.rs
+index e89bf9ea..63df4722 100644
+--- a/crates/bitwarden-core/src/auth/api/response/identity_success_response.rs
++++ b/crates/bitwarden-core/src/auth/api/response/identity_success_response.rs
+@@ -17,8 +17,12 @@ pub(crate) struct IdentityTokenSuccessResponse {
+     pub(crate) private_key: Option<String>,
+     #[serde(alias = "Key")]
+     pub(crate) key: Option<String>,
++    // Phi patch: pub(crate) so `login_password` can surface the two-factor
++    // remember token (issued when the login sent `remember: true`); clients
++    // replay it as `TwoFactorProvider::Remember` to skip 2FA on later logins
++    // from this device.
+     #[serde(rename = "twoFactorToken")]
+-    two_factor_token: Option<String>,
++    pub(crate) two_factor_token: Option<String>,
+     #[serde(alias = "Kdf")]
+     kdf: KdfType,
+     #[serde(rename = "kdfIterations", alias = "KdfIterations")]
+diff --git a/crates/bitwarden-core/src/auth/login/password.rs b/crates/bitwarden-core/src/auth/login/password.rs
+index b1dbb7ba..5df202d4 100644
+--- a/crates/bitwarden-core/src/auth/login/password.rs
++++ b/crates/bitwarden-core/src/auth/login/password.rs
+@@ -127,6 +127,13 @@ pub struct PasswordLoginResponse {
+     /// The available two factor authentication options. Present only when authentication fails due
+     /// to requiring a second authentication factor.
+     pub two_factor: Option<TwoFactorProviders>,
++    // Phi patch: the two-factor remember token the server issues when the
++    // login's `TwoFactorRequest` set `remember: true`. Replay it on later
++    // logins as `TwoFactorProvider::Remember` to skip 2FA from this device.
++    // Upstream drops it in `process_response`, which strands 2FA accounts on
++    // every re-login (unlock/restore) that has no fresh code to offer.
++    #[allow(missing_docs)]
++    pub two_factor_token: Option<String>,
+ }
+ 
+ impl PasswordLoginResponse {
+@@ -137,18 +144,21 @@ impl PasswordLoginResponse {
+                 reset_master_password: success.reset_master_password,
+                 force_password_reset: success.force_password_reset,
+                 two_factor: None,
++                two_factor_token: success.two_factor_token,
+             },
+             IdentityTokenResponse::Payload(_) => PasswordLoginResponse {
+                 authenticated: true,
+                 reset_master_password: false,
+                 force_password_reset: false,
+                 two_factor: None,
++                two_factor_token: None,
+             },
+             IdentityTokenResponse::TwoFactorRequired(two_factor) => PasswordLoginResponse {
+                 authenticated: false,
+                 reset_master_password: false,
+                 force_password_reset: false,
+                 two_factor: Some(two_factor.two_factor_providers.into()),
++                two_factor_token: None,
+             },
+             IdentityTokenResponse::Refreshed(_) => {
+                 unreachable!("Got a `refresh_token` answer to a login request")
+-- 
+2.50.1 (Apple Git-155)
+
