@@ -1,7 +1,7 @@
 From cc2e3b0f389196ef3acf7658e682716053eb6974 Mon Sep 17 00:00:00 2001
 From: jx <jixiang@fydeos.io>
 Date: Thu, 23 Jul 2026 11:29:09 +0800
-Subject: [PATCH 2/2] fix: surface the 2FA remember token dropped by
+Subject: [PATCH 2/3] fix: surface the 2FA remember token dropped by
  PasswordLoginResponse::process_response
 
 ---

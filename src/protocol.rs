@@ -118,7 +118,16 @@ fn dispatch(request: &Value, engine: &dyn Engine) -> Value {
     let params = request.get("params").cloned().unwrap_or(Value::Null);
     match handle(method, &params, engine) {
         Ok(result) => json!({ "ok": true, "result": result }),
-        Err(e) => json!({ "ok": false, "error": { "message": e.to_string() } }),
+        Err(e) => {
+            let mut error = Map::new();
+            error.insert("message".into(), Value::String(e.to_string()));
+            // Present only for the failures a client acts on (a code to enter,
+            // a factor to supply); absent means "just show the message".
+            if let Some(code) = e.code() {
+                error.insert("code".into(), Value::String(code.to_string()));
+            }
+            json!({ "ok": false, "error": Value::Object(error) })
+        }
     }
 }
 
@@ -137,6 +146,9 @@ fn handle(method: &str, params: &Value, engine: &dyn Engine) -> Result<Value, En
             let email = params.get("email").and_then(Value::as_str).unwrap_or("");
             let master_password = params.get("masterPassword").and_then(Value::as_str).unwrap_or("");
             let two_factor = params.get("twoFactor").and_then(Value::as_str);
+            // The emailed new-device verification code, sent only on the retry
+            // that follows a `newDeviceVerificationRequired` error.
+            let new_device_otp = params.get("newDeviceOtp").and_then(Value::as_str);
             // Optional non-default server (EU cloud / self-hosted). The client
             // computes the identity + api URLs per region; we just apply them.
             let server = params.get("server");
@@ -148,6 +160,7 @@ fn handle(method: &str, params: &Value, engine: &dyn Engine) -> Result<Value, En
                 email,
                 master_password,
                 two_factor,
+                new_device_otp,
                 identity_url,
                 api_url,
                 timeout,
@@ -191,7 +204,8 @@ fn handle(method: &str, params: &Value, engine: &dyn Engine) -> Result<Value, En
             // is absent/expired; normally omitted (the engine replays its
             // stored token).
             let two_factor = params.get("twoFactor").and_then(Value::as_str);
-            engine.unlock(master_password, two_factor)?;
+            let new_device_otp = params.get("newDeviceOtp").and_then(Value::as_str);
+            engine.unlock(master_password, two_factor, new_device_otp)?;
             Ok(json!({}))
         }
         "lock" => {
@@ -400,6 +414,7 @@ mod tests {
             _email: &str,
             _master_password: &str,
             _two_factor: Option<&str>,
+            _new_device_otp: Option<&str>,
             _identity_url: Option<&str>,
             _api_url: Option<&str>,
             _timeout: &str,
@@ -407,8 +422,12 @@ mod tests {
         ) -> Result<(), EngineError> {
             Err(EngineError::NotImplemented)
         }
-        fn unlock(&self, _master_password: Option<&str>, _two_factor: Option<&str>)
-            -> Result<(), EngineError> {
+        fn unlock(
+            &self,
+            _master_password: Option<&str>,
+            _two_factor: Option<&str>,
+            _new_device_otp: Option<&str>,
+        ) -> Result<(), EngineError> {
             Err(EngineError::NotImplemented)
         }
         fn lock(&self) {}
@@ -438,6 +457,70 @@ mod tests {
         fn totp(&self, _query: &Query) -> Result<Option<String>, EngineError> {
             Err(EngineError::NotImplemented)
         }
+    }
+
+    /// Engine stub whose login always hits new-device verification.
+    struct UnverifiedDeviceEngine;
+
+    impl Engine for UnverifiedDeviceEngine {
+        fn status(&self) -> Result<VaultStatus, EngineError> {
+            Ok(VaultStatus::LoggedOut)
+        }
+        fn account(&self) -> Option<String> {
+            None
+        }
+        fn login(
+            &self,
+            _email: &str,
+            _master_password: &str,
+            _two_factor: Option<&str>,
+            _new_device_otp: Option<&str>,
+            _identity_url: Option<&str>,
+            _api_url: Option<&str>,
+            _timeout: &str,
+            _action: &str,
+        ) -> Result<(), EngineError> {
+            Err(EngineError::NewDeviceVerificationRequired)
+        }
+        fn unlock(
+            &self,
+            _mp: Option<&str>,
+            _tf: Option<&str>,
+            _otp: Option<&str>,
+        ) -> Result<(), EngineError> {
+            Err(EngineError::NotImplemented)
+        }
+        fn lock(&self) {}
+        fn logout(&self) -> Result<(), EngineError> {
+            Err(EngineError::NotImplemented)
+        }
+        fn lookup(&self, _query: &Query) -> Result<LookupOutcome, EngineError> {
+            Ok(LookupOutcome::None)
+        }
+        fn totp(&self, _query: &Query) -> Result<Option<String>, EngineError> {
+            Err(EngineError::NotImplemented)
+        }
+    }
+
+    /// The error envelope carries a machine-readable `code` for the failures a
+    /// client must act on — the sign-in sheet keys its verification-code field
+    /// off this exact string — and omits it for the rest.
+    #[test]
+    fn error_envelope_carries_the_actionable_code() {
+        let verification = dispatch(
+            &json!({"method": "login", "params": {"email": "a@b.c", "masterPassword": "pw"}}),
+            &UnverifiedDeviceEngine,
+        );
+        assert_eq!(verification["ok"], json!(false));
+        assert_eq!(
+            verification["error"]["code"],
+            json!("newDeviceVerificationRequired")
+        );
+
+        let plain = dispatch(&json!({"method": "logout"}), &UnverifiedDeviceEngine);
+        assert_eq!(plain["ok"], json!(false));
+        assert!(plain["error"].get("code").is_none());
+        assert!(plain["error"]["message"].is_string());
     }
 
     /// The wire contract finding 5's fix rests on: an ambiguous lookup must
@@ -505,6 +588,7 @@ mod tests {
                 _email: &str,
                 _master_password: &str,
                 _two_factor: Option<&str>,
+                _new_device_otp: Option<&str>,
                 _identity_url: Option<&str>,
                 _api_url: Option<&str>,
                 _timeout: &str,
@@ -512,7 +596,12 @@ mod tests {
             ) -> Result<(), EngineError> {
                 Err(EngineError::NotImplemented)
             }
-            fn unlock(&self, _mp: Option<&str>, _tf: Option<&str>) -> Result<(), EngineError> {
+            fn unlock(
+                &self,
+                _mp: Option<&str>,
+                _tf: Option<&str>,
+                _otp: Option<&str>,
+            ) -> Result<(), EngineError> {
                 Err(EngineError::NotImplemented)
             }
             fn lock(&self) {}

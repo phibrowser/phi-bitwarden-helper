@@ -131,9 +131,12 @@ lifetime (EOF means Phi went away and the helper exits). Wire frames are a
 3. The client sends requests `{"protocol_version": 1, "request_id": "…",
    "method": "…", "params": {…}}`.
 4. The server replies `{"ok": true, "result": {…}, "request_id": "…"}` or
-   `{"ok": false, "error": {"message": "…"}, "request_id": "…"}`. Each request
-   runs on its own thread, so replies may arrive out of order; the echoed
-   `request_id` is what matches them up.
+   `{"ok": false, "error": {"message": "…", "code": "…"}, "request_id": "…"}`.
+   `code` appears only on failures the client must act on rather than display
+   (`twoFactorRequired`, `newDeviceVerificationRequired`,
+   `invalidNewDeviceOtp`), each naming the credential the server still wants.
+   Each request runs on its own thread, so replies may arrive out of order; the
+   echoed `request_id` is what matches them up.
 
 Methods: `status`, `login`, `unlock`, `lock`, `logout`, `lookup`, `getTotp`.
 

@@ -13,7 +13,9 @@
 use std::io::Read;
 use std::sync::{Arc, Mutex, Once};
 
-use bitwarden_core::auth::login::{PasswordLoginRequest, TwoFactorProvider, TwoFactorRequest};
+use bitwarden_core::auth::login::{
+    LoginError, PasswordLoginRequest, TwoFactorProvider, TwoFactorRequest,
+};
 use bitwarden_core::{init_host_platform_info, ClientSettings, DeviceType, HostPlatformInfo};
 use bitwarden_pm::PasswordManagerClient;
 use bitwarden_sync::{SyncClientExt, SyncRequest};
@@ -244,6 +246,7 @@ async fn perform_login(
     email: &str,
     master_password: &str,
     two_factor: Option<TwoFactorRequest>,
+    new_device_otp: Option<&str>,
     identity_url: Option<&str>,
     api_url: Option<&str>,
 ) -> Result<(PasswordManagerClient, Vec<CipherView>, Option<String>), EngineError> {
@@ -256,12 +259,13 @@ async fn perform_login(
             email: email.to_string(),
             password: master_password.to_string(),
             two_factor,
+            new_device_otp: new_device_otp.filter(|c| !c.is_empty()).map(str::to_string),
         })
         .await
-        .map_err(|e| EngineError::Failure(e.to_string()))?;
+        .map_err(login_error)?;
 
     if result.two_factor.is_some() {
-        return Err(EngineError::Failure("Two-step code required.".to_string()));
+        return Err(EngineError::TwoFactorRequired);
     }
     let remember_token = result.two_factor_token;
 
@@ -270,6 +274,17 @@ async fn perform_login(
         .await
         .map_err(|e| EngineError::Failure(format!("Login succeeded but sync failed: {e}")))?;
     Ok((client, ciphers, remember_token))
+}
+
+/// Translates the SDK's login failures into the engine's own errors. Only the
+/// ones a client must *act* on get a variant of their own — everything else
+/// keeps the SDK's message, which the sign-in sheet shows verbatim.
+fn login_error(error: LoginError) -> EngineError {
+    match error {
+        LoginError::NewDeviceVerificationRequired => EngineError::NewDeviceVerificationRequired,
+        LoginError::InvalidNewDeviceOtp => EngineError::InvalidNewDeviceOtp,
+        other => EngineError::Failure(other.to_string()),
+    }
 }
 
 /// A `TwoFactorRequest` replaying a stored remember token (no fresh code, no
@@ -682,6 +697,7 @@ impl Engine for SdkEngine {
         email: &str,
         master_password: &str,
         two_factor: Option<&str>,
+        new_device_otp: Option<&str>,
         identity_url: Option<&str>,
         api_url: Option<&str>,
         timeout: &str,
@@ -700,6 +716,7 @@ impl Engine for SdkEngine {
             email,
             master_password,
             two_factor,
+            new_device_otp,
             identity_url,
             api_url,
         ))?;
@@ -725,8 +742,12 @@ impl Engine for SdkEngine {
         Ok(())
     }
 
-    fn unlock(&self, master_password: Option<&str>, two_factor: Option<&str>)
-        -> Result<(), EngineError> {
+    fn unlock(
+        &self,
+        master_password: Option<&str>,
+        two_factor: Option<&str>,
+        new_device_otp: Option<&str>,
+    ) -> Result<(), EngineError> {
         // Already unlocked (live or restored) — nothing to do.
         if self.lock_inner().client.is_some() {
             return Ok(());
@@ -766,6 +787,7 @@ impl Engine for SdkEngine {
             &email,
             password,
             two_factor,
+            new_device_otp,
             identity_url.as_deref(),
             api_url.as_deref(),
         ))?;
@@ -877,10 +899,14 @@ impl Engine for SdkEngine {
         // revoked, remember token expired) propagates so the app drops its
         // now-stale Keychain record. Deliberately no persist emission — the
         // app already holds exactly this record.
+        // No code to offer here — a restore runs before any UI exists. If the
+        // server has forgotten this device the error propagates and the app
+        // drops its stale record, sending the user back through sign-in.
         let (client, ciphers, remember_token) = self.rt.block_on(perform_login(
             email,
             password,
             remember_request(&token),
+            None,
             identity.as_deref(),
             api.as_deref(),
         ))?;

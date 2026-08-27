@@ -38,6 +38,7 @@ fn main() {
                 email,
                 password,
                 two_factor: None,
+                new_device_otp: None,
             })
             .await
     });

@@ -127,13 +127,41 @@ pub struct PersistedRecord {
 /// into a `persist` event frame on the socketpair; the app writes its Keychain.
 pub type PersistSink = Box<dyn Fn(Option<PersistedRecord>) + Send + Sync>;
 
+/// A failed operation. The variants above `Failure` are the ones a client must
+/// *act* on rather than merely display — each carries a stable `code()` the
+/// protocol puts on the wire beside the message, so the sign-in UI can ask for
+/// exactly what the server is missing.
 #[derive(Debug)]
 pub enum EngineError {
     NotImplemented,
     Locked,
     LoggedOut,
     NotFound,
+    /// The account has a second factor and this login offered neither a fresh
+    /// code nor remembered device trust.
+    TwoFactorRequired,
+    /// New-device login protection: the server does not recognize this
+    /// device's identifier, has emailed a one-time code, and refuses every
+    /// login from here until one arrives. Retry carrying `new_device_otp`.
+    NewDeviceVerificationRequired,
+    /// The `new_device_otp` sent with the last attempt was wrong or expired;
+    /// the server has emailed a fresh code.
+    InvalidNewDeviceOtp,
     Failure(String),
+}
+
+impl EngineError {
+    /// Machine-readable tag for the errors a client branches on; `None` means
+    /// "just display the message". These wire strings are matched by Phi's
+    /// Swift client (`BitwardenService.ClientError.helperError`).
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            EngineError::TwoFactorRequired => Some("twoFactorRequired"),
+            EngineError::NewDeviceVerificationRequired => Some("newDeviceVerificationRequired"),
+            EngineError::InvalidNewDeviceOtp => Some("invalidNewDeviceOtp"),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for EngineError {
@@ -143,6 +171,14 @@ impl fmt::Display for EngineError {
             EngineError::Locked => write!(f, "The vault is locked."),
             EngineError::LoggedOut => write!(f, "Not logged in."),
             EngineError::NotFound => write!(f, "No matching item."),
+            EngineError::TwoFactorRequired => write!(f, "Two-step code required."),
+            EngineError::NewDeviceVerificationRequired => write!(
+                f,
+                "New device verification required. Enter the code emailed to you."
+            ),
+            EngineError::InvalidNewDeviceOtp => {
+                write!(f, "That verification code is invalid or has expired.")
+            }
             EngineError::Failure(m) => write!(f, "{m}"),
         }
     }
@@ -162,11 +198,15 @@ pub trait Engine: Send + Sync {
     /// self-hosted instance); both `None` means the default US cloud.
     /// `timeout`/`action` are the session-timeout policy wire strings (see
     /// `set_timeout`); they decide what survives across restarts.
+    /// `new_device_otp` is the one-time code the server emails when it does not
+    /// recognize this device (see `EngineError::NewDeviceVerificationRequired`);
+    /// omitted on the first attempt, which is what triggers that email.
     fn login(
         &self,
         email: &str,
         master_password: &str,
         two_factor: Option<&str>,
+        new_device_otp: Option<&str>,
         identity_url: Option<&str>,
         api_url: Option<&str>,
         timeout: &str,
@@ -176,9 +216,14 @@ pub trait Engine: Send + Sync {
     /// user's password (typed, or released by biometric/PIN on the app side).
     /// `two_factor` is a freshly typed second-factor code for accounts whose
     /// remember token has expired (engines that hold a valid remember token
-    /// need no code).
-    fn unlock(&self, master_password: Option<&str>, two_factor: Option<&str>)
-        -> Result<(), EngineError>;
+    /// need no code). `new_device_otp` is as in `login`: an unlock is a
+    /// re-login, so a device the server has forgotten must verify again here.
+    fn unlock(
+        &self,
+        master_password: Option<&str>,
+        two_factor: Option<&str>,
+        new_device_otp: Option<&str>,
+    ) -> Result<(), EngineError>;
     fn lock(&self);
     fn logout(&self) -> Result<(), EngineError>;
 
@@ -242,6 +287,7 @@ impl Engine for StubEngine {
         _email: &str,
         _master_password: &str,
         _two_factor: Option<&str>,
+        _new_device_otp: Option<&str>,
         _identity_url: Option<&str>,
         _api_url: Option<&str>,
         _timeout: &str,
@@ -249,8 +295,12 @@ impl Engine for StubEngine {
     ) -> Result<(), EngineError> {
         Err(EngineError::NotImplemented)
     }
-    fn unlock(&self, _master_password: Option<&str>, _two_factor: Option<&str>)
-        -> Result<(), EngineError> {
+    fn unlock(
+        &self,
+        _master_password: Option<&str>,
+        _two_factor: Option<&str>,
+        _new_device_otp: Option<&str>,
+    ) -> Result<(), EngineError> {
         Err(EngineError::NotImplemented)
     }
     fn lock(&self) {}

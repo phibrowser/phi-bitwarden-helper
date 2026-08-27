@@ -47,6 +47,7 @@ fn main() {
                 email: "probe@example.com".to_string(),
                 password: "probe".to_string(),
                 two_factor: None,
+                new_device_otp: None,
             })
             .await
     });
