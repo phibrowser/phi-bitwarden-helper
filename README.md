@@ -110,7 +110,7 @@ Release checklist — each item blocks distribution:
    verify by hand with
 
    ```sh
-   git -C ../sdk-internal format-patch 7fd530e4..phi/rust-v3.0.0-patched -o /tmp/p
+   git -C ../sdk-internal format-patch --no-signature 7fd530e4..phi/rust-v3.0.0-patched -o /tmp/p
    diff -r /tmp/p sdk-patches
    ```
 4. **Legal sign-off** on (a) the separate-process boundary: the FSF FAQ treats

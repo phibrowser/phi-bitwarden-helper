@@ -26,8 +26,10 @@ SDK_BRANCH="phi/rust-v3.0.0-patched"
 # offer names sdk-patches/ as Corresponding Source, so the series must
 # reconstruct the exact SDK tree this binary links — a Phi patch that lands on
 # the branch without being exported would otherwise ship a binary nobody can
-# rebuild from published source. Regenerate with:
-#   git -C ../sdk-internal format-patch $SDK_BASE..$SDK_BRANCH -o sdk-patches
+# rebuild from published source. --no-signature keeps the check independent of
+# the local git version, which format-patch otherwise stamps on every patch.
+# Regenerate with:
+#   git -C ../sdk-internal format-patch --no-signature $SDK_BASE..$SDK_BRANCH -o sdk-patches
 echo "==> verifying sdk-patches/ matches $SDK_BRANCH"
 if ! git -C "$SDK_DIR" rev-parse --verify -q "$SDK_BASE^{commit}" >/dev/null \
   || ! git -C "$SDK_DIR" rev-parse --verify -q "$SDK_BRANCH^{commit}" >/dev/null; then
@@ -36,12 +38,12 @@ if ! git -C "$SDK_DIR" rev-parse --verify -q "$SDK_BASE^{commit}" >/dev/null \
 fi
 PATCH_CHECK_DIR="$(mktemp -d)"
 trap 'rm -rf "$PATCH_CHECK_DIR"' EXIT
-git -C "$SDK_DIR" format-patch "$SDK_BASE..$SDK_BRANCH" -o "$PATCH_CHECK_DIR" >/dev/null
+git -C "$SDK_DIR" format-patch --no-signature "$SDK_BASE..$SDK_BRANCH" -o "$PATCH_CHECK_DIR" >/dev/null
 if ! diff -r "$PATCH_CHECK_DIR" sdk-patches >/dev/null 2>&1; then
   echo "error: sdk-patches/ is out of date with $SDK_BRANCH — the shipped source" >&2
   echo "       offer would be incomplete (GPLv3 §6). Regenerate it with:" >&2
   echo "         rm -f sdk-patches/*.patch" >&2
-  echo "         git -C $SDK_DIR format-patch $SDK_BASE..$SDK_BRANCH -o sdk-patches" >&2
+  echo "         git -C $SDK_DIR format-patch --no-signature $SDK_BASE..$SDK_BRANCH -o sdk-patches" >&2
   diff -r "$PATCH_CHECK_DIR" sdk-patches >&2 || true
   exit 1
 fi
